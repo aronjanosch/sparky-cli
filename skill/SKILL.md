@@ -10,10 +10,10 @@ metadata: {"clawdbot":{"emoji":"🏃","requires":{"bins":["sparky"]}}}
 Use `sparky` to interact with a self-hosted SparkyFitness server — log food, exercise, weight, steps, and mood.
 
 Install
-- Download a pre-built binary from https://github.com/aron/sparky-cli/releases and place it in your PATH, or
+- Homebrew (macOS/Linux): `brew tap aronjanosch/tap && brew install sparky-cli`
 - Build from source (requires Go 1.21+):
   ```
-  git clone https://github.com/aron/sparky-cli
+  git clone https://github.com/aronjanosch/sparky-cli
   cd sparky-cli
   go build -o sparky .
   sudo mv sparky /usr/local/bin/
