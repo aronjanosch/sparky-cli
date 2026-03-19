@@ -17,6 +17,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build
 go build -o sparky .
 
+# Release (bump git tag, then run — updates GitHub releases + Homebrew formula)
+git tag v0.x.0
+GITHUB_TOKEN=$(gh auth token) goreleaser release --clean
+
 # Run
 ./sparky --help
 

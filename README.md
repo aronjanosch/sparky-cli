@@ -70,6 +70,15 @@ sparky summary [-s YYYY-MM-DD] [-e YYYY-MM-DD]   # default: last 7 days
 sparky trends [-n 30]                              # day-by-day nutrition table
 ```
 
+## Releasing a new version
+
+```bash
+git tag v0.x.0
+GITHUB_TOKEN=$(gh auth token) goreleaser release --clean
+```
+
+This builds binaries for all platforms, publishes a GitHub release, and updates the Homebrew formula in `aronjanosch/homebrew-tap` automatically.
+
 ## OpenClaw skill
 
 `skill/SKILL.md` packages this CLI as an [OpenClaw](https://github.com/steipete/openclaw) skill so Claude can invoke it directly.
