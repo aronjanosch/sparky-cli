@@ -42,8 +42,9 @@ sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]
 sparky food diary [-d YYYY-MM-DD]
 sparky food delete <uuid>
 ```
-`-m` meal options: `breakfast`, `lunch`, `dinner`, `snacks` (default: `snacks`)  
-`food log` picks the **first search result** — run `search` first to confirm the match.
+`-m` meal options: `breakfast`, `lunch`, `dinner`, `snacks` (default: `snacks`)
+`food search` checks your local library first; if nothing is found it falls back to **Open Food Facts** automatically.
+`food log` picks the first match and auto-imports from Open Food Facts if the food isn't in your library yet.
 
 ### exercise
 ```bash
@@ -52,6 +53,8 @@ sparky exercise log running --duration 45 --calories 400 [-d YYYY-MM-DD]
 sparky exercise diary [-d YYYY-MM-DD]
 sparky exercise delete <uuid>
 ```
+`exercise search` checks your local library first; if nothing is found it falls back to the **Free Exercise DB** automatically.
+`exercise log` picks the first match and auto-imports from Free Exercise DB if the exercise isn't in your library yet.
 
 ### checkin
 ```bash
@@ -131,6 +134,7 @@ type CLI struct {
 | Helper | Purpose |
 |--------|---------|
 | `resolveUserID(ctx)` | `GET /identity/user` → returns `activeUserId` string |
+| `resolveProviderID(ctx, type)` | `GET /external-providers` → returns ID for the given `provider_type` |
 | `strVal(m, keys...)` | Safe string extraction from `map[string]any`; tries keys in order |
 | `floatVal(m, keys...)` | Safe float64 extraction; handles `float64` and `int` JSON types |
 
@@ -143,11 +147,15 @@ type CLI struct {
 | Command | Method | Path |
 |---------|--------|------|
 | ping | GET | `/identity/user` |
-| food search | GET | `/foods/foods-paginated?searchTerm=...` |
+| food search (local) | GET | `/foods/foods-paginated?searchTerm=...` |
+| food search (online) | GET | `/v2/foods/search/openfoodfacts?query=...&autoScale=true` |
+| food import | POST | `/foods` |
 | food log | POST | `/food-entries` |
 | food diary | GET | `/food-entries/by-date/{date}` |
 | food delete | DELETE | `/food-entries/{id}` |
-| exercise search | GET | `/exercises/search?query=...` |
+| exercise search (local) | GET | `/exercises/search?searchTerm=...` |
+| exercise search (online) | GET | `/exercises/search-external?query=...&providerId=...&providerType=free-exercise-db` |
+| exercise import | POST | `/exercises` |
 | exercise log | POST | `/exercise-entries` |
 | exercise diary | GET | `/exercise-entries/by-date?date=...` |
 | exercise delete | DELETE | `/exercise-entries/{id}` |

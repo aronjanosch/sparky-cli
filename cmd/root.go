@@ -37,6 +37,7 @@ type CLI struct {
 	Food     FoodCmd     `cmd:"" help:"Search, log, and view food entries."`
 	Exercise ExerciseCmd `cmd:"" help:"Search, log, and view exercise entries."`
 	Checkin  CheckinCmd  `cmd:"" help:"Log and view daily check-ins and biometrics."`
+	Goals    GoalsCmd    `cmd:"" help:"Show daily nutrition goals vs actual intake."`
 	Summary  SummaryCmd  `cmd:"" help:"Show nutrition and exercise summary."`
 	Trends   TrendsCmd   `cmd:"" help:"Show nutrition trends over time."`
 

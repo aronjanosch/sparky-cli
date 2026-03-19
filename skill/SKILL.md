@@ -26,14 +26,14 @@ Setup (once)
 - `sparky ping` — verify connection
 
 Food
-- Search: `sparky food search "chicken breast" [-l 10]`
-- Log: `sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]`
+- Search: `sparky food search "chicken breast" [-l 10]` — searches local DB first, falls back to Open Food Facts automatically
+- Log: `sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]` — auto-imports from Open Food Facts if not found locally
 - Diary: `sparky food diary [-d YYYY-MM-DD]`
 - Delete: `sparky food delete <uuid>`
 
 Exercise
-- Search: `sparky exercise search running [-l 10]`
-- Log: `sparky exercise log running --duration 45 --calories 400 [-d YYYY-MM-DD]`
+- Search: `sparky exercise search running [-l 10]` — searches local DB first, falls back to Free Exercise DB automatically
+- Log: `sparky exercise log running --duration 45 --calories 400 [-d YYYY-MM-DD]` — auto-imports from Free Exercise DB if not found locally
 - Diary: `sparky exercise diary [-d YYYY-MM-DD]`
 - Delete: `sparky exercise delete <uuid>`
 
@@ -49,7 +49,8 @@ Summary & trends
 
 Notes
 - `-j` / `--json` is a **root-level flag**: `sparky -j food diary`, not `sparky food diary -j`
-- `food log` and `exercise log` always pick the first search result — run `search` first to confirm
+- `food log` and `exercise log` always pick the first search result — run `search` first to confirm the match
+- Both search commands fall back to online providers automatically when nothing is found locally; matches are added to your Sparky library on first log
 - Weight is stored in kg; lbs are auto-converted (`166 lbs → 75.30 kg`)
 - Full UUIDs for delete: `sparky -j food diary | jq '.[0].id'`
 - Meal options: `breakfast`, `lunch`, `dinner`, `snacks` (default: `snacks`)

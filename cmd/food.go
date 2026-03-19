@@ -21,40 +21,66 @@ type FoodSearchCmd struct {
 	Limit int    `short:"l" default:"10" help:"Max results to show."`
 }
 
-func (f *FoodSearchCmd) Run(ctx *Context) error {
+func searchFoodsLocal(ctx *Context, name string, limit int) ([]map[string]any, error) {
 	raw, err := ctx.Client().Get("/foods/foods-paginated", map[string]string{
-		"searchTerm":  f.Name,
-		"foodFilter":  "all",
-		"currentPage": "1",
-		"itemsPerPage": fmt.Sprintf("%d", f.Limit),
-		"sortBy":      "name:asc",
+		"searchTerm":   name,
+		"foodFilter":   "all",
+		"currentPage":  "1",
+		"itemsPerPage": fmt.Sprintf("%d", limit),
+		"sortBy":       "name:asc",
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	if ctx.JSON {
-		fmt.Println(string(raw))
-		return nil
-	}
-
 	var resp struct {
 		Foods []map[string]any `json:"foods"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		fmt.Println(string(raw))
-		return nil
+		return nil, err
 	}
+	return resp.Foods, nil
+}
 
-	if len(resp.Foods) == 0 {
-		fmt.Println("No results found.")
-		return nil
+func searchFoodsExternal(ctx *Context, name string) ([]map[string]any, error) {
+	raw, err := ctx.Client().Get("/v2/foods/search/openfoodfacts", map[string]string{
+		"query":     name,
+		"autoScale": "true",
+	})
+	if err != nil {
+		return nil, err
 	}
+	var resp struct {
+		Foods []map[string]any `json:"foods"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		// try as a plain array
+		var foods []map[string]any
+		if err2 := json.Unmarshal(raw, &foods); err2 != nil {
+			return nil, err
+		}
+		return foods, nil
+	}
+	return resp.Foods, nil
+}
 
+// importExternalFood saves an externally-found food to the local Sparky DB and returns it.
+func importExternalFood(ctx *Context, food map[string]any) (map[string]any, error) {
+	raw, err := ctx.Client().Post("/foods", food)
+	if err != nil {
+		return nil, err
+	}
+	var created map[string]any
+	if err := json.Unmarshal(raw, &created); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+func printFoodTable(foods []map[string]any) {
 	fmt.Printf("%-36s  %-32s  %8s  %7s  %7s  %7s\n", "ID", "Name", "Cal", "Protein", "Carbs", "Fat")
 	fmt.Printf("%-36s  %-32s  %8s  %7s  %7s  %7s\n", "----", "----", "---", "-------", "-----", "---")
-	for _, food := range resp.Foods {
-		id := strVal(food, "id")
+	for _, food := range foods {
+		id := strVal(food, "id", "provider_external_id")
 		name := strVal(food, "name")
 		if len(name) > 32 {
 			name = name[:29] + "..."
@@ -67,6 +93,43 @@ func (f *FoodSearchCmd) Run(ctx *Context) error {
 		unit := strVal(v, "serving_unit")
 		fmt.Printf("%-36s  %-32s  %8s  %7s  %7s  %7s  /%s\n", id, name, cal, pro, carb, fat, unit)
 	}
+}
+
+func (f *FoodSearchCmd) Run(ctx *Context) error {
+	foods, err := searchFoodsLocal(ctx, f.Name, f.Limit)
+	if err != nil {
+		return err
+	}
+
+	if len(foods) > 0 {
+		if ctx.JSON {
+			raw, _ := json.Marshal(foods)
+			fmt.Println(string(raw))
+			return nil
+		}
+		printFoodTable(foods)
+		return nil
+	}
+
+	// Fall back to Open Food Facts
+	if !ctx.JSON {
+		fmt.Printf("No local results for %q — searching Open Food Facts online...\n\n", f.Name)
+	}
+	extFoods, err := searchFoodsExternal(ctx, f.Name)
+	if err != nil {
+		return fmt.Errorf("external search failed: %w", err)
+	}
+	if len(extFoods) == 0 {
+		fmt.Println("No results found.")
+		return nil
+	}
+	if ctx.JSON {
+		raw, _ := json.Marshal(extFoods)
+		fmt.Println(string(raw))
+		return nil
+	}
+	fmt.Println("[online — Open Food Facts]")
+	printFoodTable(extFoods)
 	return nil
 }
 
@@ -98,29 +161,34 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	// Search for food
-	searchRaw, err := ctx.Client().Get("/foods/foods-paginated", map[string]string{
-		"searchTerm":   f.Name,
-		"foodFilter":   "all",
-		"currentPage":  "1",
-		"itemsPerPage": "1",
-		"sortBy":       "name:asc",
-	})
+	// Search locally first
+	foods, err := searchFoodsLocal(ctx, f.Name, 1)
 	if err != nil {
 		return err
 	}
 
-	var searchResp struct {
-		Foods []map[string]any `json:"foods"`
+	var food map[string]any
+	if len(foods) > 0 {
+		food = foods[0]
+	} else {
+		// Fall back to Open Food Facts
+		extFoods, extErr := searchFoodsExternal(ctx, f.Name)
+		if extErr != nil {
+			return fmt.Errorf("food %q not found locally; external search failed: %w", f.Name, extErr)
+		}
+		if len(extFoods) == 0 {
+			return fmt.Errorf("food %q not found — use 'sparky food search' to browse available foods", f.Name)
+		}
+		// Import the food into Sparky to get a local ID
+		imported, importErr := importExternalFood(ctx, extFoods[0])
+		if importErr != nil {
+			return fmt.Errorf("found %q online but failed to add it to Sparky: %w", f.Name, importErr)
+		}
+		food = imported
+		if !ctx.JSON {
+			fmt.Printf("Added %q from Open Food Facts to your library.\n", strVal(food, "name"))
+		}
 	}
-	if err := json.Unmarshal(searchRaw, &searchResp); err != nil {
-		return fmt.Errorf("parse food search: %w", err)
-	}
-	if len(searchResp.Foods) == 0 {
-		return fmt.Errorf("food %q not found — use 'sparky food search' to find the exact name", f.Name)
-	}
-
-	food := searchResp.Foods[0]
 	v := variantMap(food)
 
 	unit := f.Unit

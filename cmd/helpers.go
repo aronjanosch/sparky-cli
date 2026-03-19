@@ -5,6 +5,24 @@ import (
 	"fmt"
 )
 
+// resolveProviderID fetches /external-providers and returns the ID for the given providerType.
+func resolveProviderID(ctx *Context, providerType string) (string, error) {
+	raw, err := ctx.Client().Get("/external-providers", nil)
+	if err != nil {
+		return "", err
+	}
+	var providers []map[string]any
+	if err := json.Unmarshal(raw, &providers); err != nil {
+		return "", err
+	}
+	for _, p := range providers {
+		if strVal(p, "provider_type") == providerType {
+			return strVal(p, "id"), nil
+		}
+	}
+	return "", fmt.Errorf("provider %q not configured in Sparky", providerType)
+}
+
 func resolveUserID(ctx *Context) (string, error) {
 	raw, err := ctx.Client().Get("/identity/user", nil)
 	if err != nil {
