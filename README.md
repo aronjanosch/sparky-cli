@@ -54,4 +54,4 @@ sparky -j food diary | jq '.[0].id'
 
 ## OpenClaw skill
 
-The `skill/sparky.md` file packages this CLI as an [OpenClaw](https://github.com/steipete/openclaw) skill so Claude can invoke it directly.
+The `skill/SKILL.md` file packages this CLI as an [OpenClaw](https://github.com/steipete/openclaw) skill so Claude can invoke it directly.
