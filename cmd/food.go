@@ -88,55 +88,41 @@ func importExternalFood(ctx *Context, food map[string]any) (map[string]any, erro
 	return created, nil
 }
 
-// normalizeExternalFoodForImport ensures Open Food Facts payloads are acceptable
-// to Sparky's /foods endpoint: every persisted food_variants row needs a non-null
-// serving_size. The API may insert from default_variant and/or a variants array;
-// we normalize all of them.
-//
-// When OFF omits serving info, nutrition is almost always per 100g — use 100g so
-// logging with e.g. "-q 90 -u g" scales correctly (90/100 of label values).
+// normalizeExternalFoodForImport prepares an Open Food Facts food payload for
+// POST /foods. The server's createFood handler reads all nutrients from top-level
+// fields (serving_size, calories, protein, etc.) — it ignores default_variant and
+// the variants array entirely. So we flatten default_variant to the top level and
+// drop variants (only used in the CSV bulk-import path).
 func normalizeExternalFoodForImport(food map[string]any) map[string]any {
 	if food == nil {
 		return map[string]any{}
 	}
 
-	food["default_variant"] = normalizeVariantForOFFImport(variantMap(food))
-
-	if raw, ok := food["variants"]; ok {
-		if arr, ok := raw.([]any); ok {
-			for i, item := range arr {
-				if vm, ok := item.(map[string]any); ok {
-					arr[i] = normalizeVariantForOFFImport(vm)
-				}
+	// Flatten default_variant fields to top level (server reads from here).
+	for k, val := range variantMap(food) {
+		if val != nil {
+			if existing, exists := food[k]; !exists || existing == nil {
+				food[k] = val
 			}
-			food["variants"] = arr
 		}
+	}
+	delete(food, "variants") // variants array is only used by CSV bulk import
+
+	// Ensure serving_size is non-null (DB NOT NULL constraint on food_variants).
+	if floatVal(food, "serving_size") <= 0 {
+		unit := strings.TrimSpace(strVal(food, "serving_unit"))
+		if unit == "" || strings.EqualFold(unit, "g") {
+			food["serving_size"] = 100.0
+			food["serving_unit"] = "g"
+		} else {
+			food["serving_size"] = 1.0
+		}
+	}
+	if strVal(food, "serving_unit") == "" {
+		food["serving_unit"] = "g"
 	}
 
 	return food
-}
-
-// normalizeVariantForOFFImport sets serving_size / serving_unit when Open Food Facts
-// leaves them null or zero.
-func normalizeVariantForOFFImport(v map[string]any) map[string]any {
-	if v == nil {
-		v = map[string]any{}
-	}
-
-	size := floatVal(v, "serving_size")
-	unit := strings.TrimSpace(strVal(v, "serving_unit"))
-	if size <= 0 {
-		if unit == "" || strings.EqualFold(unit, "g") {
-			v["serving_size"] = 100.0
-			v["serving_unit"] = "g"
-		} else {
-			v["serving_size"] = 1.0
-		}
-	}
-	if strVal(v, "serving_unit") == "" {
-		v["serving_unit"] = "serving"
-	}
-	return v
 }
 
 func printFoodTable(foods []map[string]any) {
