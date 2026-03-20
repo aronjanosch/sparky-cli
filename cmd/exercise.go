@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -277,10 +278,50 @@ func (e *ExerciseSearchCmd) Run(ctx *Context) error {
 // ── Log ───────────────────────────────────────────────────────────────────────
 
 type ExerciseLogCmd struct {
-	Name     string `arg:"" help:"Exercise name to search and log."`
-	Date     string `short:"d" default:"" help:"Date (YYYY-MM-DD). Defaults to today."`
-	Duration int    `name:"duration" default:"30" help:"Duration in minutes."`
-	Calories int    `name:"calories" default:"0" help:"Calories burned."`
+	Name     string   `arg:"" help:"Exercise name to search and log."`
+	Date     string   `short:"d" default:"" help:"Date (YYYY-MM-DD). Defaults to today."`
+	Duration int      `name:"duration" default:"0" help:"Duration in minutes (cardio)."`
+	Calories int      `name:"calories" default:"0" help:"Calories burned."`
+	Set      []string `name:"set" short:"s" help:"Set: REPS[xWEIGHT][@RPE] e.g. 10x12@7. Repeatable."`
+	Notes    string   `name:"notes" short:"n" default:"" help:"Session notes."`
+}
+
+// parseSet converts "REPSxWEIGHT@RPE" (all parts optional except REPS) into a set map.
+// Valid examples: "10x12@7", "10x12", "10@7", "10"
+func parseSet(raw string, number int) (map[string]any, error) {
+	s := strings.TrimSpace(raw)
+	set := map[string]any{
+		"set_number": number,
+		"set_type":   "Working Set",
+	}
+
+	// strip @RPE suffix
+	if idx := strings.LastIndex(s, "@"); idx >= 0 {
+		rpe, err := strconv.Atoi(strings.TrimSpace(s[idx+1:]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid RPE in set %q: must be an integer", raw)
+		}
+		set["rpe"] = rpe
+		s = s[:idx]
+	}
+
+	// split repsxweight
+	parts := strings.SplitN(s, "x", 2)
+	reps, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || reps <= 0 {
+		return nil, fmt.Errorf("invalid set %q: expected format REPS[xWEIGHT][@RPE]", raw)
+	}
+	set["reps"] = reps
+
+	if len(parts) == 2 {
+		w, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid weight in set %q: must be a number", raw)
+		}
+		set["weight"] = w
+	}
+
+	return set, nil
 }
 
 func (e *ExerciseLogCmd) Run(ctx *Context) error {
@@ -333,12 +374,28 @@ func (e *ExerciseLogCmd) Run(ctx *Context) error {
 		return fmt.Errorf("exercise %q has no local ID after import; try 'sparky exercise search %q' and import via web UI", exerciseName, e.Name)
 	}
 
+	// Parse sets
+	var sets []map[string]any
+	for i, raw := range e.Set {
+		set, err := parseSet(raw, i+1)
+		if err != nil {
+			return err
+		}
+		sets = append(sets, set)
+	}
+
 	entry := map[string]any{
 		"user_id":          userID,
 		"exercise_id":      exerciseID,
 		"entry_date":       date,
 		"duration_minutes": e.Duration,
 		"calories_burned":  e.Calories,
+		"notes":            e.Notes,
+		"distance":         nil,
+		"avg_heart_rate":   nil,
+	}
+	if len(sets) > 0 {
+		entry["sets"] = sets
 	}
 
 	raw, err := ctx.Client().Post("/exercise-entries", entry)
@@ -351,7 +408,24 @@ func (e *ExerciseLogCmd) Run(ctx *Context) error {
 		return nil
 	}
 
-	fmt.Printf("Logged: %s — %d min on %s  [%d kcal]\n", exerciseName, e.Duration, date, e.Calories)
+	if len(sets) > 0 {
+		fmt.Printf("Logged: %s — %d set(s) on %s\n", exerciseName, len(sets), date)
+		for _, s := range sets {
+			reps, _ := s["reps"].(int)
+			weight, hasWeight := s["weight"].(float64)
+			rpe, hasRPE := s["rpe"].(int)
+			line := fmt.Sprintf("  Set %d: %d reps", s["set_number"], reps)
+			if hasWeight {
+				line += fmt.Sprintf(" @ %.4gkg", weight)
+			}
+			if hasRPE {
+				line += fmt.Sprintf("  RPE %d", rpe)
+			}
+			fmt.Println(line)
+		}
+	} else {
+		fmt.Printf("Logged: %s — %d min on %s  [%d kcal]\n", exerciseName, e.Duration, date, e.Calories)
+	}
 	return nil
 }
 
@@ -391,8 +465,6 @@ func (e *ExerciseDiaryCmd) Run(ctx *Context) error {
 	}
 
 	fmt.Printf("Exercise diary — %s\n\n", date)
-	fmt.Printf("%-8s  %-32s  %8s  %12s\n", "ID", "Exercise", "Duration", "Calories")
-	fmt.Printf("%-8s  %-32s  %8s  %12s\n", "--------", "--------------------------------", "--------", "------------")
 
 	var totalDur, totalCal float64
 	for _, e := range entries {
@@ -401,16 +473,60 @@ func (e *ExerciseDiaryCmd) Run(ctx *Context) error {
 			id = id[:8]
 		}
 		name := strVal(e, "name")
-		if len(name) > 32 {
-			name = name[:29] + "..."
-		}
 		dur := floatVal(e, "duration_minutes")
 		cal := floatVal(e, "calories_burned")
+		notes := cleanString(strVal(e, "notes"))
 		totalDur += dur
 		totalCal += cal
-		fmt.Printf("%-8s  %-32s  %7.0f m  %10.0f kc\n", id, name, dur, cal)
+
+		// Parse sets from response
+		var sets []map[string]any
+		if raw, ok := e["sets"]; ok {
+			if arr, ok := raw.([]any); ok {
+				for _, item := range arr {
+					if m, ok := item.(map[string]any); ok {
+						sets = append(sets, m)
+					}
+				}
+			}
+		}
+
+		if len(sets) > 0 {
+			fmt.Printf("[%s] %s", id, name)
+			if cal > 0 {
+				fmt.Printf("  [%.0f kcal]", cal)
+			}
+			if notes != "" {
+				fmt.Printf("  — %s", notes)
+			}
+			fmt.Println()
+			for _, s := range sets {
+				reps := floatVal(s, "reps")
+				weight := floatVal(s, "weight")
+				rpe := floatVal(s, "rpe")
+				setNum := floatVal(s, "set_number")
+				setNotes := cleanString(strVal(s, "notes"))
+				line := fmt.Sprintf("    Set %.0f: %.0f reps", setNum, reps)
+				if weight > 0 {
+					line += fmt.Sprintf(" @ %.4gkg", weight)
+				}
+				if rpe > 0 {
+					line += fmt.Sprintf("  RPE %.0f", rpe)
+				}
+				if setNotes != "" {
+					line += fmt.Sprintf("  (%s)", setNotes)
+				}
+				fmt.Println(line)
+			}
+		} else {
+			fmt.Printf("[%s] %-32s  %5.0f min  %6.0f kcal", id, name, dur, cal)
+			if notes != "" {
+				fmt.Printf("  — %s", notes)
+			}
+			fmt.Println()
+		}
 	}
-	fmt.Printf("\n%-42s  %7.0f m  %10.0f kc\n", "TOTAL", totalDur, totalCal)
+	fmt.Printf("\nTotal: %.0f min  %.0f kcal\n", totalDur, totalCal)
 	return nil
 }
 
