@@ -18,8 +18,9 @@ type ExerciseCmd struct {
 // ── Search ────────────────────────────────────────────────────────────────────
 
 type ExerciseSearchCmd struct {
-	Term  string `arg:"" help:"Exercise term to search for."`
-	Limit int    `short:"l" default:"10" help:"Max results to show."`
+	Term     string `arg:"" help:"Exercise term to search for."`
+	Limit    int    `short:"l" default:"10" help:"Max results to show."`
+	External bool   `name:"external" short:"e" help:"Search external providers only (bypasses local cache)."`
 }
 
 func searchExercisesLocal(ctx *Context, term string) ([]map[string]any, error) {
@@ -234,37 +235,52 @@ func printExerciseTable(results []map[string]any) {
 	}
 }
 
-func (e *ExerciseSearchCmd) Run(ctx *Context) error {
-	results, err := searchExercisesLocal(ctx, e.Term)
-	if err != nil {
-		return err
+func stampLocal(results []map[string]any, local bool) {
+	for _, r := range results {
+		r["is_local"] = local
 	}
-	if e.Limit > 0 && len(results) > e.Limit {
-		results = results[:e.Limit]
-	}
+}
 
-	if len(results) > 0 {
-		if ctx.JSON {
-			raw, _ := json.Marshal(results)
-			fmt.Println(string(raw))
+func (e *ExerciseSearchCmd) Run(ctx *Context) error {
+	if !e.External {
+		results, err := searchExercisesLocal(ctx, e.Term)
+		if err != nil {
+			return err
+		}
+		if e.Limit > 0 && len(results) > e.Limit {
+			results = results[:e.Limit]
+		}
+		if len(results) > 0 {
+			stampLocal(results, true)
+			if ctx.JSON {
+				raw, _ := json.Marshal(results)
+				fmt.Println(string(raw))
+				return nil
+			}
+			printExerciseTable(results)
 			return nil
 		}
-		printExerciseTable(results)
-		return nil
 	}
 
-	// Fall back to external providers
+	// External search — either forced via --external or local returned nothing
 	if !ctx.JSON {
-		fmt.Printf("No local results for %q — searching external providers online...\n\n", e.Term)
+		if e.External {
+			fmt.Printf("Searching external providers for %q...\n\n", e.Term)
+		} else {
+			fmt.Printf("No local results for %q — searching external providers online...\n\n", e.Term)
+		}
 	}
 	extResults, err := searchExercisesExternal(ctx, e.Term, e.Limit)
 	if err != nil {
 		return fmt.Errorf("external search failed: %w", err)
 	}
 	if len(extResults) == 0 {
-		fmt.Println("No results found.")
+		if !ctx.JSON {
+			fmt.Println("No results found.")
+		}
 		return nil
 	}
+	stampLocal(extResults, false)
 	if ctx.JSON {
 		raw, _ := json.Marshal(extResults)
 		fmt.Println(string(raw))
@@ -278,7 +294,8 @@ func (e *ExerciseSearchCmd) Run(ctx *Context) error {
 // ── Log ───────────────────────────────────────────────────────────────────────
 
 type ExerciseLogCmd struct {
-	Name     string   `arg:"" help:"Exercise name to search and log."`
+	Name     string   `arg:"" optional:"" help:"Exercise name to search and log."`
+	ID       string   `name:"id" help:"Log by exercise ID directly (skips search — recommended for scripts/agents)."`
 	Date     string   `short:"d" default:"" help:"Date (YYYY-MM-DD). Defaults to today."`
 	Duration int      `name:"duration" default:"0" help:"Duration in minutes (cardio)."`
 	Calories int      `name:"calories" default:"0" help:"Calories burned."`
@@ -325,6 +342,10 @@ func parseSet(raw string, number int) (map[string]any, error) {
 }
 
 func (e *ExerciseLogCmd) Run(ctx *Context) error {
+	if e.ID == "" && e.Name == "" {
+		return fmt.Errorf("provide an exercise name or --id")
+	}
+
 	date := e.Date
 	if date == "" {
 		date = time.Now().Format("2006-01-02")
@@ -335,41 +356,58 @@ func (e *ExerciseLogCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	// Search locally first
-	results, err := searchExercisesLocal(ctx, e.Name)
-	if err != nil {
-		return err
-	}
+	var exerciseID string
+	var exerciseName string
 
-	var exercise map[string]any
-	if len(results) > 0 {
-		exercise = results[0]
+	if e.ID != "" {
+		// Direct ID path — no search, no ambiguity
+		exerciseID = e.ID
 	} else {
-		// Fall back to external search
-		extResults, extErr := searchExercisesExternal(ctx, e.Name, 1)
-		if extErr != nil {
-			return fmt.Errorf("exercise %q not found locally; external search failed: %w", e.Name, extErr)
+		// Search locally first (up to 5 for picker)
+		results, err := searchExercisesLocal(ctx, e.Name)
+		if err != nil {
+			return err
 		}
-		if len(extResults) == 0 {
-			return fmt.Errorf("exercise %q not found — use 'sparky exercise search' to browse available exercises", e.Name)
-		}
-		// Import the external exercise into Sparky so it gets a local ID
-		imported, importErr := importExternalExercise(ctx, extResults[0])
-		if importErr != nil {
-			return fmt.Errorf("found %q online but failed to add it to Sparky: %w", e.Name, importErr)
-		}
-		exercise = imported
-		if !ctx.JSON {
-			source := cleanString(strVal(extResults[0], "provider_type", "source"))
-			if source == "" {
-				source = "external provider"
+
+		var exercise map[string]any
+		if len(results) > 0 {
+			picked, pickErr := pickResult(e.Name, "exercise", results, "name", ctx.JSON)
+			if pickErr != nil {
+				return pickErr
 			}
-			fmt.Printf("Added %q from %s to your library.\n", strVal(exercise, "name"), source)
+			exercise = picked
+		} else {
+			// Fall back to external search — fetch up to 5 for picker
+			extResults, extErr := searchExercisesExternal(ctx, e.Name, 5)
+			if extErr != nil {
+				return fmt.Errorf("exercise %q not found locally; external search failed: %w", e.Name, extErr)
+			}
+			if len(extResults) == 0 {
+				return fmt.Errorf("exercise %q not found — use 'sparky exercise search' to browse", e.Name)
+			}
+			picked, pickErr := pickResult(e.Name, "exercise", extResults, "name", ctx.JSON)
+			if pickErr != nil {
+				return pickErr
+			}
+			// Import the chosen external exercise into Sparky so it gets a local ID
+			imported, importErr := importExternalExercise(ctx, picked)
+			if importErr != nil {
+				return fmt.Errorf("found %q online but failed to add it to Sparky: %w", e.Name, importErr)
+			}
+			exercise = imported
+			if !ctx.JSON {
+				source := cleanString(strVal(picked, "provider_type", "source"))
+				if source == "" {
+					source = "external provider"
+				}
+				fmt.Printf("Added %q from %s to your library.\n", strVal(exercise, "name"), source)
+			}
 		}
+
+		exerciseID = strVal(exercise, "id")
+		exerciseName = strVal(exercise, "name")
 	}
 
-	exerciseID := strVal(exercise, "id")
-	exerciseName := strVal(exercise, "name")
 	if exerciseID == "" {
 		return fmt.Errorf("exercise %q has no local ID after import; try 'sparky exercise search %q' and import via web UI", exerciseName, e.Name)
 	}
@@ -406,6 +444,17 @@ func (e *ExerciseLogCmd) Run(ctx *Context) error {
 	if ctx.JSON {
 		fmt.Println(string(raw))
 		return nil
+	}
+
+	// When logged by --id, pull name from the response
+	if exerciseName == "" {
+		var resp map[string]any
+		if jsonErr := json.Unmarshal(raw, &resp); jsonErr == nil {
+			exerciseName = strVal(resp, "exercise_name")
+		}
+		if exerciseName == "" {
+			exerciseName = exerciseID
+		}
 	}
 
 	if len(sets) > 0 {

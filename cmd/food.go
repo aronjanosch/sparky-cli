@@ -63,6 +63,18 @@ func searchFoodsExternal(ctx *Context, name string) ([]map[string]any, error) {
 	return resp.Foods, nil
 }
 
+func getFoodByID(ctx *Context, id string) (map[string]any, error) {
+	raw, err := ctx.Client().Get("/foods/"+id, nil)
+	if err != nil {
+		return nil, err
+	}
+	var food map[string]any
+	if err := json.Unmarshal(raw, &food); err != nil {
+		return nil, err
+	}
+	return food, nil
+}
+
 // importExternalFood saves an externally-found food to the local Sparky DB and returns it.
 func importExternalFood(ctx *Context, food map[string]any) (map[string]any, error) {
 	raw, err := ctx.Client().Post("/foods", food)
@@ -136,7 +148,8 @@ func (f *FoodSearchCmd) Run(ctx *Context) error {
 // ── Log ───────────────────────────────────────────────────────────────────────
 
 type FoodLogCmd struct {
-	Name string  `arg:"" help:"Food name to search and log."`
+	Name string  `arg:"" optional:"" help:"Food name to search and log."`
+	ID   string  `name:"id" help:"Log by food ID directly (skips search — recommended for scripts/agents)."`
 	Meal string  `short:"m" default:"snacks" enum:"breakfast,lunch,dinner,snacks" help:"Meal type."`
 	Date string  `short:"d" default:"" help:"Date (YYYY-MM-DD). Defaults to today."`
 	Qty  float64 `short:"q" default:"1" help:"Quantity (in the food's default serving unit)."`
@@ -144,6 +157,10 @@ type FoodLogCmd struct {
 }
 
 func (f *FoodLogCmd) Run(ctx *Context) error {
+	if f.ID == "" && f.Name == "" {
+		return fmt.Errorf("provide a food name or --id")
+	}
+
 	date := f.Date
 	if date == "" {
 		date = time.Now().Format("2006-01-02")
@@ -161,34 +178,57 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	// Search locally first
-	foods, err := searchFoodsLocal(ctx, f.Name, 1)
-	if err != nil {
-		return err
+	var food map[string]any
+
+	if f.ID != "" {
+		// Direct ID path — fetch food to get variant/nutrient data
+		fetched, fetchErr := getFoodByID(ctx, f.ID)
+		if fetchErr != nil {
+			return fmt.Errorf("food %q not found: %w", f.ID, fetchErr)
+		}
+		food = fetched
+	} else {
+		// Search locally first (up to 5 for picker)
+		foods, err := searchFoodsLocal(ctx, f.Name, 5)
+		if err != nil {
+			return err
+		}
+
+		if len(foods) > 0 {
+			picked, pickErr := pickResult(f.Name, "food", foods, "name", ctx.JSON)
+			if pickErr != nil {
+				return pickErr
+			}
+			food = picked
+		} else {
+			// Fall back to Open Food Facts — already returns multiple results
+			extFoods, extErr := searchFoodsExternal(ctx, f.Name)
+			if extErr != nil {
+				return fmt.Errorf("food %q not found locally; external search failed: %w", f.Name, extErr)
+			}
+			if len(extFoods) == 0 {
+				return fmt.Errorf("food %q not found — use 'sparky food search' to browse available foods", f.Name)
+			}
+			// Cap to 5 for readability
+			if len(extFoods) > 5 {
+				extFoods = extFoods[:5]
+			}
+			picked, pickErr := pickResult(f.Name, "food", extFoods, "name", ctx.JSON)
+			if pickErr != nil {
+				return pickErr
+			}
+			// Import the chosen food into Sparky to get a local ID
+			imported, importErr := importExternalFood(ctx, picked)
+			if importErr != nil {
+				return fmt.Errorf("found %q online but failed to add it to Sparky: %w", f.Name, importErr)
+			}
+			food = imported
+			if !ctx.JSON {
+				fmt.Printf("Added %q from Open Food Facts to your library.\n", strVal(food, "name"))
+			}
+		}
 	}
 
-	var food map[string]any
-	if len(foods) > 0 {
-		food = foods[0]
-	} else {
-		// Fall back to Open Food Facts
-		extFoods, extErr := searchFoodsExternal(ctx, f.Name)
-		if extErr != nil {
-			return fmt.Errorf("food %q not found locally; external search failed: %w", f.Name, extErr)
-		}
-		if len(extFoods) == 0 {
-			return fmt.Errorf("food %q not found — use 'sparky food search' to browse available foods", f.Name)
-		}
-		// Import the food into Sparky to get a local ID
-		imported, importErr := importExternalFood(ctx, extFoods[0])
-		if importErr != nil {
-			return fmt.Errorf("found %q online but failed to add it to Sparky: %w", f.Name, importErr)
-		}
-		food = imported
-		if !ctx.JSON {
-			fmt.Printf("Added %q from Open Food Facts to your library.\n", strVal(food, "name"))
-		}
-	}
 	v := variantMap(food)
 
 	unit := f.Unit
