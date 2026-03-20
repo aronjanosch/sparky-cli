@@ -93,12 +93,14 @@ func parseExternalExerciseResults(raw []byte) ([]map[string]any, error) {
 }
 
 // importExternalExercise saves an externally-found exercise to the local Sparky DB and returns it.
+// POST /exercises uses multer (multipart/form-data) and expects the payload as a JSON string
+// in the "exerciseData" field — plain application/json is not accepted by that route.
 func importExternalExercise(ctx *Context, ex map[string]any) (map[string]any, error) {
 	payload, err := normalizeExternalExerciseForImport(ex)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := ctx.Client().Post("/exercises", payload)
+	raw, err := ctx.Client().PostMultipartJSON("/exercises", "exerciseData", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -119,31 +121,35 @@ func normalizeExternalExerciseForImport(ex map[string]any) (map[string]any, erro
 		category = "Other"
 	}
 
-	muscleGroups := mergeUniqueStrings(
-		toCleanStringSlice(ex["muscle_groups"]),
+	// DB column is `source` (NOT NULL) — map from provider_type or source field
+	source := cleanString(strVal(ex, "provider_type", "source"))
+	if source == "" {
+		source = "manual"
+	}
+
+	// DB columns use primary_muscles / secondary_muscles, not muscle_groups
+	primaryMuscles := mergeUniqueStrings(
 		toCleanStringSlice(ex["primary_muscles"]),
-		toCleanStringSlice(ex["secondary_muscles"]),
+		toCleanStringSlice(ex["muscle_groups"]), // fallback when provider only gives a combined list
 	)
+	secondaryMuscles := toCleanStringSlice(ex["secondary_muscles"])
 
 	payload := map[string]any{
-		"name":          name,
-		"category":      category,
-		"equipment":     toCleanStringSlice(ex["equipment"]),
-		"muscle_groups": muscleGroups,
-		"instructions":  toCleanStringSlice(ex["instructions"]),
-		"images":        toCleanStringSlice(ex["images"]),
-		"description":   cleanString(strVal(ex, "description")),
-	}
-
-	if providerExternalID := cleanString(strVal(ex, "provider_external_id", "id")); providerExternalID != "" {
-		payload["provider_external_id"] = providerExternalID
-	}
-	providerType := cleanString(strVal(ex, "provider_type"))
-	if providerType == "" {
-		providerType = cleanString(strVal(ex, "source"))
-	}
-	if providerType != "" {
-		payload["provider_type"] = providerType
+		"name":              name,
+		"category":          category,
+		"source":            source,
+		"source_id":         cleanString(strVal(ex, "provider_external_id", "source_id", "id")),
+		"equipment":         toCleanStringSlice(ex["equipment"]),
+		"primary_muscles":   primaryMuscles,
+		"secondary_muscles": secondaryMuscles,
+		"instructions":      toCleanStringSlice(ex["instructions"]),
+		"images":            toCleanStringSlice(ex["images"]),
+		"description":       cleanString(strVal(ex, "description")),
+		"force":             cleanString(strVal(ex, "force")),
+		"level":             cleanString(strVal(ex, "level")),
+		"mechanic":          cleanString(strVal(ex, "mechanic")),
+		"is_custom":         true,
+		"shared_with_public": false,
 	}
 
 	return payload, nil
@@ -362,7 +368,7 @@ func (e *ExerciseDiaryCmd) Run(ctx *Context) error {
 	}
 
 	raw, err := ctx.Client().Get("/exercise-entries/by-date", map[string]string{
-		"date": date,
+		"selectedDate": date,
 	})
 	if err != nil {
 		return err
@@ -394,7 +400,7 @@ func (e *ExerciseDiaryCmd) Run(ctx *Context) error {
 		if len(id) > 8 {
 			id = id[:8]
 		}
-		name := strVal(e, "exercise_name")
+		name := strVal(e, "name")
 		if len(name) > 32 {
 			name = name[:29] + "..."
 		}

@@ -36,14 +36,40 @@ func (c *SummaryCmd) Run(ctx *Context) error {
 		return nil
 	}
 
-	var r map[string]any
+	var r struct {
+		NutritionData   []map[string]any `json:"nutritionData"`
+		ExerciseEntries []map[string]any `json:"exerciseEntries"`
+		MeasurementData []map[string]any `json:"measurementData"`
+	}
 	if err := json.Unmarshal(raw, &r); err != nil {
 		fmt.Println(string(raw))
 		return nil
 	}
 
-	fmtFloat := func(m map[string]any, key string, unit string) string {
-		v := floatVal(m, key)
+	var totalCal, totalPro, totalCarb, totalFat float64
+	for _, d := range r.NutritionData {
+		totalCal += floatVal(d, "calories")
+		totalPro += floatVal(d, "protein")
+		totalCarb += floatVal(d, "carbs")
+		totalFat += floatVal(d, "fat")
+	}
+
+	var totalExCal, totalExDur float64
+	for _, e := range r.ExerciseEntries {
+		totalExCal += floatVal(e, "calories_burned")
+		totalExDur += floatVal(e, "duration_minutes")
+	}
+
+	var weightSum float64
+	var weightCount int
+	for _, m := range r.MeasurementData {
+		if w := floatVal(m, "weight"); w > 0 {
+			weightSum += w
+			weightCount++
+		}
+	}
+
+	dash := func(v float64, unit string) string {
 		if v == 0 {
 			return "—"
 		}
@@ -52,16 +78,19 @@ func (c *SummaryCmd) Run(ctx *Context) error {
 
 	fmt.Printf("Summary: %s → %s\n", start, end)
 	fmt.Printf("\nNutrition\n")
-	fmt.Printf("  %-22s %s\n", "Calories:", fmtFloat(r, "totalCalories", "kcal"))
-	fmt.Printf("  %-22s %s\n", "Protein:", fmtFloat(r, "totalProtein", "g"))
-	fmt.Printf("  %-22s %s\n", "Carbs:", fmtFloat(r, "totalCarbs", "g"))
-	fmt.Printf("  %-22s %s\n", "Fat:", fmtFloat(r, "totalFat", "g"))
+	fmt.Printf("  %-22s %s\n", "Calories:", dash(totalCal, "kcal"))
+	fmt.Printf("  %-22s %s\n", "Protein:", dash(totalPro, "g"))
+	fmt.Printf("  %-22s %s\n", "Carbs:", dash(totalCarb, "g"))
+	fmt.Printf("  %-22s %s\n", "Fat:", dash(totalFat, "g"))
 	fmt.Printf("\nExercise\n")
-	fmt.Printf("  %-22s %s\n", "Calories burned:", fmtFloat(r, "totalExerciseCalories", "kcal"))
-	fmt.Printf("  %-22s %s\n", "Duration:", fmtFloat(r, "totalExerciseDuration", "min"))
+	fmt.Printf("  %-22s %s\n", "Calories burned:", dash(totalExCal, "kcal"))
+	fmt.Printf("  %-22s %s\n", "Duration:", dash(totalExDur, "min"))
 	fmt.Printf("\nWellbeing\n")
-	fmt.Printf("  %-22s %s\n", "Avg mood:", fmtFloat(r, "averageMood", "/ 10"))
-	fmt.Printf("  %-22s %s\n", "Avg weight:", fmtFloat(r, "averageWeight", "kg"))
+	if weightCount > 0 {
+		fmt.Printf("  %-22s %.2f kg\n", "Avg weight:", weightSum/float64(weightCount))
+	} else {
+		fmt.Printf("  %-22s —\n", "Avg weight:")
+	}
 	return nil
 }
 

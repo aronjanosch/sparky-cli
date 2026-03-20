@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"time"
@@ -81,6 +82,52 @@ func (c *Client) Get(path string, query map[string]string) (json.RawMessage, err
 
 func (c *Client) Post(path string, body any) (json.RawMessage, error) {
 	return c.do("POST", path, nil, body)
+}
+
+// PostMultipartJSON sends a multipart/form-data POST with body marshaled as JSON
+// into a single text field named fieldName. Used for endpoints backed by multer.
+func (c *Client) PostMultipartJSON(path, fieldName string, body any) (json.RawMessage, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormField(fieldName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fw.Write(data); err != nil {
+		return nil, err
+	}
+	w.Close()
+
+	u := c.BaseURL + path
+	req, err := http.NewRequest("POST", u, &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-api-key", c.APIKey)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, raw)
+	}
+	if len(raw) == 0 {
+		return json.RawMessage("null"), nil
+	}
+	return raw, nil
 }
 
 func (c *Client) Put(path string, body any) (json.RawMessage, error) {
