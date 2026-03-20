@@ -77,7 +77,7 @@ func getFoodByID(ctx *Context, id string) (map[string]any, error) {
 
 // importExternalFood saves an externally-found food to the local Sparky DB and returns it.
 func importExternalFood(ctx *Context, food map[string]any) (map[string]any, error) {
-	raw, err := ctx.Client().Post("/foods", food)
+	raw, err := ctx.Client().Post("/foods", normalizeExternalFoodForImport(food))
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +86,25 @@ func importExternalFood(ctx *Context, food map[string]any) (map[string]any, erro
 		return nil, err
 	}
 	return created, nil
+}
+
+// normalizeExternalFoodForImport ensures Open Food Facts payloads are acceptable
+// to Sparky's /foods endpoint, which requires a non-null default_variant.serving_size.
+func normalizeExternalFoodForImport(food map[string]any) map[string]any {
+	if food == nil {
+		return map[string]any{}
+	}
+
+	v := variantMap(food)
+	servingSize := floatVal(v, "serving_size")
+	if servingSize <= 0 {
+		v["serving_size"] = 1.0
+	}
+	if strVal(v, "serving_unit") == "" {
+		v["serving_unit"] = "serving"
+	}
+	food["default_variant"] = v
+	return food
 }
 
 func printFoodTable(foods []map[string]any) {
