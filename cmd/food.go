@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -12,13 +13,15 @@ type FoodCmd struct {
 	Log    FoodLogCmd    `cmd:"" help:"Log a food entry."`
 	Diary  FoodDiaryCmd  `cmd:"" help:"View food diary for a date."`
 	Delete FoodDeleteCmd `cmd:"" help:"Delete a food diary entry by ID."`
+	Remove FoodRemoveCmd `cmd:"" help:"Remove a food from your library."`
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
 type FoodSearchCmd struct {
-	Name  string `arg:"" help:"Food name to search for."`
-	Limit int    `short:"l" default:"10" help:"Max results to show."`
+	Name    string `arg:"" optional:"" help:"Food name to search for."`
+	Barcode string `name:"barcode" short:"b" help:"Look up by barcode (exact product match)."`
+	Limit   int    `short:"l" default:"10" help:"Max results to show."`
 }
 
 func searchFoodsLocal(ctx *Context, name string, limit int) ([]map[string]any, error) {
@@ -75,6 +78,26 @@ func getFoodByID(ctx *Context, id string) (map[string]any, error) {
 	return food, nil
 }
 
+// lookupFoodByBarcode calls GET /foods/barcode/:barcode and returns the food
+// plus the source ("local", "openfoodfacts", etc.).
+func lookupFoodByBarcode(ctx *Context, barcode string) (map[string]any, string, error) {
+	raw, err := ctx.Client().Get("/foods/barcode/"+barcode, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	var resp struct {
+		Source string         `json:"source"`
+		Food   map[string]any `json:"food"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, "", err
+	}
+	if resp.Source == "not_found" || resp.Food == nil {
+		return nil, "not_found", fmt.Errorf("barcode %q not found", barcode)
+	}
+	return resp.Food, resp.Source, nil
+}
+
 // importExternalFood saves an externally-found food to the local Sparky DB and returns it.
 func importExternalFood(ctx *Context, food map[string]any) (map[string]any, error) {
 	raw, err := ctx.Client().Post("/foods", normalizeExternalFoodForImport(food))
@@ -126,13 +149,17 @@ func normalizeExternalFoodForImport(food map[string]any) map[string]any {
 }
 
 func printFoodTable(foods []map[string]any) {
-	fmt.Printf("%-36s  %-32s  %8s  %7s  %7s  %7s\n", "ID", "Name", "Cal", "Protein", "Carbs", "Fat")
-	fmt.Printf("%-36s  %-32s  %8s  %7s  %7s  %7s\n", "----", "----", "---", "-------", "-----", "---")
+	fmt.Printf("%-36s  %-28s  %-16s  %8s  %7s  %7s  %7s\n", "ID", "Name", "Brand", "Cal", "Protein", "Carbs", "Fat")
+	fmt.Printf("%-36s  %-28s  %-16s  %8s  %7s  %7s  %7s\n", "----", "----", "-----", "---", "-------", "-----", "---")
 	for _, food := range foods {
 		id := strVal(food, "id", "provider_external_id")
 		name := strVal(food, "name")
-		if len(name) > 32 {
-			name = name[:29] + "..."
+		if len(name) > 28 {
+			name = name[:25] + "..."
+		}
+		brand := strVal(food, "brand")
+		if len(brand) > 16 {
+			brand = brand[:13] + "..."
 		}
 		v := variantMap(food)
 		cal := fmt.Sprintf("%.0f", floatVal(v, "calories"))
@@ -140,11 +167,101 @@ func printFoodTable(foods []map[string]any) {
 		carb := fmt.Sprintf("%.1f", floatVal(v, "carbs"))
 		fat := fmt.Sprintf("%.1f", floatVal(v, "fat"))
 		unit := strVal(v, "serving_unit")
-		fmt.Printf("%-36s  %-32s  %8s  %7s  %7s  %7s  /%s\n", id, name, cal, pro, carb, fat, unit)
+		fmt.Printf("%-36s  %-28s  %-16s  %8s  %7s  %7s  %7s  /%s\n", id, name, brand, cal, pro, carb, fat, unit)
 	}
 }
 
+// pickFoodResult selects one food from results, showing macros + brand so the
+// user can distinguish between products with the same name.
+func pickFoodResult(query string, results []map[string]any, pick int, jsonMode bool) (map[string]any, error) {
+	if len(results) == 0 {
+		return nil, fmt.Errorf("food %q not found", query)
+	}
+
+	queryLow := strings.ToLower(strings.TrimSpace(query))
+
+	// Exact name match — silent
+	for _, r := range results {
+		if strings.ToLower(strings.TrimSpace(strVal(r, "name"))) == queryLow {
+			return r, nil
+		}
+	}
+
+	// --pick N (for scripts/agents)
+	if pick > 0 {
+		if pick > len(results) {
+			return nil, fmt.Errorf("--pick %d out of range (%d results)", pick, len(results))
+		}
+		return results[pick-1], nil
+	}
+
+	// JSON mode: always results[0]
+	if jsonMode {
+		return results[0], nil
+	}
+
+	foodLine := func(r map[string]any) string {
+		v := variantMap(r)
+		brand := strVal(r, "brand")
+		name := strVal(r, "name")
+		if brand != "" {
+			name = fmt.Sprintf("%s [%s]", name, brand)
+		}
+		return fmt.Sprintf("%-44s  %.0f kcal | %.1fg P | %.1fg F  per %.4g%s",
+			name,
+			floatVal(v, "calories"), floatVal(v, "protein"), floatVal(v, "fat"),
+			floatVal(v, "serving_size"), strVal(v, "serving_unit"))
+	}
+
+	if len(results) == 1 {
+		fmt.Printf("Best match: %s\nUse this? [Y/n] ", foodLine(results[0]))
+		answer := readLine()
+		if answer == "" || strings.ToLower(answer) == "y" {
+			return results[0], nil
+		}
+		return nil, fmt.Errorf("cancelled — try a more specific name or use 'sparky food search'")
+	}
+
+	fmt.Printf("Multiple matches for %q. Pick one:\n", query)
+	for i, r := range results {
+		fmt.Printf("  [%d] %s\n", i+1, foodLine(r))
+	}
+	fmt.Printf("  [0] Cancel\n")
+	fmt.Printf("Choice [1-%d]: ", len(results))
+
+	answer := readLine()
+	n, err := strconv.Atoi(strings.TrimSpace(answer))
+	if err != nil || n == 0 {
+		return nil, fmt.Errorf("cancelled")
+	}
+	if n < 1 || n > len(results) {
+		return nil, fmt.Errorf("invalid choice %d", n)
+	}
+	return results[n-1], nil
+}
+
 func (f *FoodSearchCmd) Run(ctx *Context) error {
+	if f.Barcode != "" {
+		food, source, err := lookupFoodByBarcode(ctx, f.Barcode)
+		if err != nil {
+			return err
+		}
+		if ctx.JSON {
+			raw, _ := json.Marshal(food)
+			fmt.Println(string(raw))
+			return nil
+		}
+		if source != "local" {
+			fmt.Printf("[online — %s]\n", source)
+		}
+		printFoodTable([]map[string]any{food})
+		return nil
+	}
+
+	if f.Name == "" {
+		return fmt.Errorf("provide a food name or --barcode")
+	}
+
 	foods, err := searchFoodsLocal(ctx, f.Name, f.Limit)
 	if err != nil {
 		return err
@@ -185,17 +302,19 @@ func (f *FoodSearchCmd) Run(ctx *Context) error {
 // ── Log ───────────────────────────────────────────────────────────────────────
 
 type FoodLogCmd struct {
-	Name string  `arg:"" optional:"" help:"Food name to search and log."`
-	ID   string  `name:"id" help:"Log by food ID directly (skips search — recommended for scripts/agents)."`
-	Meal string  `short:"m" default:"snacks" enum:"breakfast,lunch,dinner,snacks" help:"Meal type."`
-	Date string  `short:"d" default:"" help:"Date (YYYY-MM-DD). Defaults to today."`
-	Qty  float64 `short:"q" default:"1" help:"Quantity (in the food's default serving unit)."`
-	Unit string  `short:"u" default:"" help:"Unit override (e.g. g, oz, serving)."`
+	Name    string  `arg:"" optional:"" help:"Food name to search and log."`
+	ID      string  `name:"id" help:"Log by food ID directly (skips search)."`
+	Barcode string  `name:"barcode" short:"b" help:"Look up by barcode (exact product match)."`
+	Pick    int     `name:"pick" default:"0" help:"Pre-select the Nth search result (1-based) without prompting. For use in scripts/agents."`
+	Meal    string  `short:"m" default:"snacks" enum:"breakfast,lunch,dinner,snacks" help:"Meal type."`
+	Date    string  `short:"d" default:"" help:"Date (YYYY-MM-DD). Defaults to today."`
+	Qty     float64 `short:"q" default:"1" help:"Quantity (in the food's default serving unit)."`
+	Unit    string  `short:"u" default:"" help:"Unit override (e.g. g, oz, serving)."`
 }
 
 func (f *FoodLogCmd) Run(ctx *Context) error {
-	if f.ID == "" && f.Name == "" {
-		return fmt.Errorf("provide a food name or --id")
+	if f.ID == "" && f.Name == "" && f.Barcode == "" {
+		return fmt.Errorf("provide a food name, --id, or --barcode")
 	}
 
 	date := f.Date
@@ -203,13 +322,11 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 		date = time.Now().Format("2006-01-02")
 	}
 
-	// Resolve meal type ID
 	mealTypeID, err := resolveMealTypeID(ctx, f.Meal)
 	if err != nil {
 		return err
 	}
 
-	// Get user ID
 	userID, err := resolveUserID(ctx)
 	if err != nil {
 		return err
@@ -217,28 +334,46 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 
 	var food map[string]any
 
-	if f.ID != "" {
-		// Direct ID path — fetch food to get variant/nutrient data
+	switch {
+	case f.ID != "":
 		fetched, fetchErr := getFoodByID(ctx, f.ID)
 		if fetchErr != nil {
 			return fmt.Errorf("food %q not found: %w", f.ID, fetchErr)
 		}
 		food = fetched
-	} else {
+
+	case f.Barcode != "":
+		found, source, lookupErr := lookupFoodByBarcode(ctx, f.Barcode)
+		if lookupErr != nil {
+			return fmt.Errorf("barcode lookup failed: %w", lookupErr)
+		}
+		if source != "local" {
+			imported, importErr := importExternalFood(ctx, found)
+			if importErr != nil {
+				return fmt.Errorf("barcode %q found online but failed to import: %w", f.Barcode, importErr)
+			}
+			food = imported
+			if !ctx.JSON {
+				fmt.Printf("Added %q from %s to your library.\n", strVal(food, "name"), source)
+			}
+		} else {
+			food = found
+		}
+
+	default:
 		// Search locally first (up to 5 for picker)
-		foods, err := searchFoodsLocal(ctx, f.Name, 5)
-		if err != nil {
-			return err
+		foods, searchErr := searchFoodsLocal(ctx, f.Name, 5)
+		if searchErr != nil {
+			return searchErr
 		}
 
 		if len(foods) > 0 {
-			picked, pickErr := pickResult(f.Name, "food", foods, "name", ctx.JSON)
+			picked, pickErr := pickFoodResult(f.Name, foods, f.Pick, ctx.JSON)
 			if pickErr != nil {
 				return pickErr
 			}
 			food = picked
 		} else {
-			// Fall back to Open Food Facts — already returns multiple results
 			extFoods, extErr := searchFoodsExternal(ctx, f.Name)
 			if extErr != nil {
 				return fmt.Errorf("food %q not found locally; external search failed: %w", f.Name, extErr)
@@ -246,15 +381,13 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 			if len(extFoods) == 0 {
 				return fmt.Errorf("food %q not found — use 'sparky food search' to browse available foods", f.Name)
 			}
-			// Cap to 5 for readability
 			if len(extFoods) > 5 {
 				extFoods = extFoods[:5]
 			}
-			picked, pickErr := pickResult(f.Name, "food", extFoods, "name", ctx.JSON)
+			picked, pickErr := pickFoodResult(f.Name, extFoods, f.Pick, ctx.JSON)
 			if pickErr != nil {
 				return pickErr
 			}
-			// Import the chosen food into Sparky to get a local ID
 			imported, importErr := importExternalFood(ctx, picked)
 			if importErr != nil {
 				return fmt.Errorf("found %q online but failed to add it to Sparky: %w", f.Name, importErr)
@@ -276,7 +409,6 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 		}
 	}
 
-	// Scale nutrients: variant values are per serving_size units, scale to requested qty
 	servingSize := floatVal(v, "serving_size")
 	if servingSize <= 0 {
 		servingSize = 1
@@ -381,10 +513,10 @@ func (f *FoodDiaryCmd) Run(ctx *Context) error {
 	return nil
 }
 
-// ── Delete ────────────────────────────────────────────────────────────────────
+// ── Delete (diary entry) ───────────────────────────────────────────────────────
 
 type FoodDeleteCmd struct {
-	ID string `arg:"" help:"Entry ID to delete."`
+	ID string `arg:"" help:"Diary entry ID to delete."`
 }
 
 func (f *FoodDeleteCmd) Run(ctx *Context) error {
@@ -392,7 +524,22 @@ func (f *FoodDeleteCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Deleted entry %s.\n", f.ID)
+	fmt.Printf("Deleted diary entry %s.\n", f.ID)
+	return nil
+}
+
+// ── Remove (food from library) ────────────────────────────────────────────────
+
+type FoodRemoveCmd struct {
+	ID string `arg:"" help:"Food ID to remove from your library."`
+}
+
+func (f *FoodRemoveCmd) Run(ctx *Context) error {
+	_, err := ctx.Client().Delete("/foods/" + f.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Removed food %s from library.\n", f.ID)
 	return nil
 }
 
@@ -423,4 +570,3 @@ func resolveMealTypeID(ctx *Context, mealName string) (string, error) {
 	}
 	return "", fmt.Errorf("meal type %q not found", mealName)
 }
-
