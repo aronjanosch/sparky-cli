@@ -53,8 +53,8 @@ sparky exercise log running --duration 45 --calories 400 [-d YYYY-MM-DD]
 sparky exercise diary [-d YYYY-MM-DD]
 sparky exercise delete <uuid>
 ```
-`exercise search` checks your local library first; if nothing is found it falls back to the **Free Exercise DB** automatically.
-`exercise log` picks the first match and auto-imports from Free Exercise DB if the exercise isn't in your library yet.
+`exercise search` checks your local library first; if nothing is found it falls back to external providers (**Free Exercise DB**, then `wger`) automatically.
+`exercise log` picks the first match and auto-imports it from the available external provider if the exercise isn't in your library yet.
 
 ### checkin
 ```bash

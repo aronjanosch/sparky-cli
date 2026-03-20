@@ -3,11 +3,12 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
 type ExerciseCmd struct {
-	Search ExerciseSearchCmd `cmd:"" help:"Search for exercises (local first, falls back to Free Exercise DB)."`
+	Search ExerciseSearchCmd `cmd:"" help:"Search for exercises (local first, falls back to external providers)."`
 	Log    ExerciseLogCmd    `cmd:"" help:"Log an exercise entry."`
 	Diary  ExerciseDiaryCmd  `cmd:"" help:"View exercise diary for a date."`
 	Delete ExerciseDeleteCmd `cmd:"" help:"Delete an exercise diary entry by ID."`
@@ -35,29 +36,69 @@ func searchExercisesLocal(ctx *Context, term string) ([]map[string]any, error) {
 }
 
 func searchExercisesExternal(ctx *Context, term string, limit int) ([]map[string]any, error) {
-	providerID, err := resolveProviderID(ctx, "free-exercise-db")
-	if err != nil {
-		return nil, err
+	providers := []string{"free-exercise-db", "wger"}
+	var lastErr error
+
+	for _, providerType := range providers {
+		providerID, err := resolveProviderID(ctx, providerType)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, err := ctx.Client().Get("/exercises/search-external", map[string]string{
+			"query":        term,
+			"providerId":   providerID,
+			"providerType": providerType,
+			"limit":        fmt.Sprintf("%d", limit),
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		results, err := parseExternalExerciseResults(raw)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(results) == 0 {
+			continue
+		}
+		for _, ex := range results {
+			if cleanString(strVal(ex, "provider_type")) == "" {
+				ex["provider_type"] = providerType
+			}
+		}
+		return results, nil
 	}
-	raw, err := ctx.Client().Get("/exercises/search-external", map[string]string{
-		"query":        term,
-		"providerId":   providerID,
-		"providerType": "free-exercise-db",
-		"limit":        fmt.Sprintf("%d", limit),
-	})
-	if err != nil {
-		return nil, err
+
+	if lastErr != nil {
+		return nil, lastErr
 	}
+	return []map[string]any{}, nil
+}
+
+func parseExternalExerciseResults(raw []byte) ([]map[string]any, error) {
 	var results []map[string]any
-	if err := json.Unmarshal(raw, &results); err != nil {
-		return nil, err
+	if err := json.Unmarshal(raw, &results); err == nil {
+		return results, nil
 	}
-	return results, nil
+	var wrapped struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil {
+		return wrapped.Items, nil
+	}
+	return nil, fmt.Errorf("failed to parse external exercise response")
 }
 
 // importExternalExercise saves an externally-found exercise to the local Sparky DB and returns it.
 func importExternalExercise(ctx *Context, ex map[string]any) (map[string]any, error) {
-	raw, err := ctx.Client().Post("/exercises", ex)
+	payload, err := normalizeExternalExerciseForImport(ex)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := ctx.Client().Post("/exercises", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +107,96 @@ func importExternalExercise(ctx *Context, ex map[string]any) (map[string]any, er
 		return nil, err
 	}
 	return created, nil
+}
+
+func normalizeExternalExerciseForImport(ex map[string]any) (map[string]any, error) {
+	name := cleanString(strVal(ex, "name"))
+	if name == "" {
+		return nil, fmt.Errorf("external exercise is missing required field %q", "name")
+	}
+	category := cleanString(strVal(ex, "category"))
+	if category == "" {
+		category = "Other"
+	}
+
+	muscleGroups := mergeUniqueStrings(
+		toCleanStringSlice(ex["muscle_groups"]),
+		toCleanStringSlice(ex["primary_muscles"]),
+		toCleanStringSlice(ex["secondary_muscles"]),
+	)
+
+	payload := map[string]any{
+		"name":          name,
+		"category":      category,
+		"equipment":     toCleanStringSlice(ex["equipment"]),
+		"muscle_groups": muscleGroups,
+		"instructions":  toCleanStringSlice(ex["instructions"]),
+		"images":        toCleanStringSlice(ex["images"]),
+		"description":   cleanString(strVal(ex, "description")),
+	}
+
+	if providerExternalID := cleanString(strVal(ex, "provider_external_id", "id")); providerExternalID != "" {
+		payload["provider_external_id"] = providerExternalID
+	}
+	providerType := cleanString(strVal(ex, "provider_type"))
+	if providerType == "" {
+		providerType = cleanString(strVal(ex, "source"))
+	}
+	if providerType != "" {
+		payload["provider_type"] = providerType
+	}
+
+	return payload, nil
+}
+
+func toCleanStringSlice(v any) []string {
+	out := []string{}
+	switch x := v.(type) {
+	case []any:
+		for _, item := range x {
+			if s := cleanString(fmt.Sprintf("%v", item)); s != "" {
+				out = append(out, s)
+			}
+		}
+	case []string:
+		for _, item := range x {
+			if s := cleanString(item); s != "" {
+				out = append(out, s)
+			}
+		}
+	case string:
+		if s := cleanString(x); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func cleanString(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "undefined") || strings.EqualFold(s, "null") {
+		return ""
+	}
+	return s
+}
+
+func mergeUniqueStrings(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, g := range groups {
+		for _, s := range g {
+			key := strings.ToLower(cleanString(s))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func printExerciseTable(results []map[string]any) {
@@ -115,9 +246,9 @@ func (e *ExerciseSearchCmd) Run(ctx *Context) error {
 		return nil
 	}
 
-	// Fall back to Free Exercise DB
+	// Fall back to external providers
 	if !ctx.JSON {
-		fmt.Printf("No local results for %q — searching Free Exercise DB online...\n\n", e.Term)
+		fmt.Printf("No local results for %q — searching external providers online...\n\n", e.Term)
 	}
 	extResults, err := searchExercisesExternal(ctx, e.Term, e.Limit)
 	if err != nil {
@@ -132,7 +263,7 @@ func (e *ExerciseSearchCmd) Run(ctx *Context) error {
 		fmt.Println(string(raw))
 		return nil
 	}
-	fmt.Println("[online — Free Exercise DB]")
+	fmt.Println("[online — external provider]")
 	printExerciseTable(extResults)
 	return nil
 }
@@ -182,12 +313,19 @@ func (e *ExerciseLogCmd) Run(ctx *Context) error {
 		}
 		exercise = imported
 		if !ctx.JSON {
-			fmt.Printf("Added %q from Free Exercise DB to your library.\n", strVal(exercise, "name"))
+			source := cleanString(strVal(extResults[0], "provider_type", "source"))
+			if source == "" {
+				source = "external provider"
+			}
+			fmt.Printf("Added %q from %s to your library.\n", strVal(exercise, "name"), source)
 		}
 	}
 
 	exerciseID := strVal(exercise, "id")
 	exerciseName := strVal(exercise, "name")
+	if exerciseID == "" {
+		return fmt.Errorf("exercise %q has no local ID after import; try 'sparky exercise search %q' and import via web UI", exerciseName, e.Name)
+	}
 
 	entry := map[string]any{
 		"user_id":          userID,
