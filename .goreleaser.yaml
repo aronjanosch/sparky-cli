@@ -39,19 +39,16 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
+homebrew_casks:
   - name: sparky-cli
+    binaries: [sparky]
     repository:
       owner: aronjanosch
       name: homebrew-tap
       token: "{{ .Env.GITHUB_TOKEN }}"
-    directory: Formula
     homepage: https://github.com/aronjanosch/sparky-cli
-    description: CLI for SparkyFitness — log food, exercise, and biometrics from your terminal
+    description: CLI for SparkyFitness - log food, exercise, and biometrics from your terminal
     license: MIT
-    install: bin.install "sparky"
-    test: |
-      system "#{bin}/sparky", "--version"
 
 release:
   github:
