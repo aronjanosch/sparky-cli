@@ -53,7 +53,7 @@ Kong (`github.com/alecthomas/kong`) handles CLI parsing. Every command struct ha
 
 **Output pattern:** Every command checks `ctx.JSON` — if true, print raw JSON; if false, format as human-readable text.
 
-**Nutrient scaling:** When logging food, nutrients on `default_variant` are per `serving_size` units. Scale before POST: `scale = requestedQty / serving_size`.
+**Nutrient scaling:** POST /food-entries stores raw per-`serving_size` nutrient values alongside `serving_size` and `quantity` as separate fields. The frontend scales at display time as `(calories / serving_size) × quantity`. Do not pre-scale nutrients before posting.
 
 ## Agentic use (AI agents)
 

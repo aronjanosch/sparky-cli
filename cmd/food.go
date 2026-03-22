@@ -47,7 +47,7 @@ func searchFoodsLocal(ctx *Context, name string, limit int) ([]map[string]any, e
 func searchFoodsExternal(ctx *Context, name string) ([]map[string]any, error) {
 	raw, err := ctx.Client().Get("/v2/foods/search/openfoodfacts", map[string]string{
 		"query":     name,
-		"autoScale": "true",
+		"autoScale": "false", // return per-100g values; we always store serving_size=100
 	})
 	if err != nil {
 		return nil, err
@@ -145,12 +145,29 @@ func normalizeExternalFoodForImport(food map[string]any) map[string]any {
 		food["serving_unit"] = "g"
 	}
 
+	// Normalize gram-based foods to per-100g so the stored base unit is always
+	// serving_size=100g. OFF often returns per-serving values (e.g. 50g serving),
+	// which causes the app to display wrong totals when it recalculates from the
+	// food's nutrient data rather than the stored entry values.
+	unit := strings.TrimSpace(strVal(food, "serving_unit"))
+	servingSize := floatVal(food, "serving_size")
+	if (strings.EqualFold(unit, "g") || unit == "") && servingSize > 0 && servingSize != 100 {
+		scale := 100.0 / servingSize
+		for _, n := range []string{"calories", "protein", "carbs", "fat", "fiber", "sugar", "sodium", "saturated_fat"} {
+			if v := floatVal(food, n); v != 0 {
+				food[n] = v * scale
+			}
+		}
+		food["serving_size"] = 100.0
+		food["serving_unit"] = "g"
+	}
+
 	return food
 }
 
 func printFoodTable(foods []map[string]any) {
-	fmt.Printf("%-36s  %-28s  %-16s  %8s  %7s  %7s  %7s\n", "ID", "Name", "Brand", "Cal", "Protein", "Carbs", "Fat")
-	fmt.Printf("%-36s  %-28s  %-16s  %8s  %7s  %7s  %7s\n", "----", "----", "-----", "---", "-------", "-----", "---")
+	fmt.Printf("%-36s  %-28s  %-16s  %12s  %7s  %7s  %7s\n", "ID", "Name", "Brand", "kcal/100g", "Pro/100g", "Carb/100g", "Fat/100g")
+	fmt.Printf("%-36s  %-28s  %-16s  %12s  %7s  %7s  %7s\n", "----", "----", "-----", "---------", "--------", "---------", "--------")
 	for _, food := range foods {
 		id := strVal(food, "id", "provider_external_id")
 		name := strVal(food, "name")
@@ -166,8 +183,7 @@ func printFoodTable(foods []map[string]any) {
 		pro := fmt.Sprintf("%.1f", floatVal(v, "protein"))
 		carb := fmt.Sprintf("%.1f", floatVal(v, "carbs"))
 		fat := fmt.Sprintf("%.1f", floatVal(v, "fat"))
-		unit := strVal(v, "serving_unit")
-		fmt.Printf("%-36s  %-28s  %-16s  %8s  %7s  %7s  %7s  /%s\n", id, name, brand, cal, pro, carb, fat, unit)
+		fmt.Printf("%-36s  %-28s  %-16s  %12s  %7s  %7s  %7s\n", id, name, brand, cal, pro, carb, fat)
 	}
 }
 
@@ -207,10 +223,9 @@ func pickFoodResult(query string, results []map[string]any, pick int, jsonMode b
 		if brand != "" {
 			name = fmt.Sprintf("%s [%s]", name, brand)
 		}
-		return fmt.Sprintf("%-44s  %.0f kcal | %.1fg P | %.1fg F  per %.4g%s",
+		return fmt.Sprintf("%-44s  %.0f kcal | %.1fg P | %.1fg F  per 100g",
 			name,
-			floatVal(v, "calories"), floatVal(v, "protein"), floatVal(v, "fat"),
-			floatVal(v, "serving_size"), strVal(v, "serving_unit"))
+			floatVal(v, "calories"), floatVal(v, "protein"), floatVal(v, "fat"))
 	}
 
 	if len(results) == 1 {
@@ -411,9 +426,11 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 
 	servingSize := floatVal(v, "serving_size")
 	if servingSize <= 0 {
-		servingSize = 1
+		servingSize = 100
 	}
-	scale := f.Qty / servingSize
+	// Send raw per-serving-size nutrients — the server snapshots these values and
+	// the frontend scales them as (calories / serving_size) × quantity at display
+	// time. Pre-scaling here would cause the frontend to double-scale.
 	entry := map[string]any{
 		"user_id":      userID,
 		"meal_type_id": mealTypeID,
@@ -423,10 +440,12 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 		"food_id":      strVal(food, "id"),
 		"variant_id":   strVal(v, "id"),
 		"food_name":    strVal(food, "name"),
-		"calories":     floatVal(v, "calories") * scale,
-		"protein":      floatVal(v, "protein") * scale,
-		"carbs":        floatVal(v, "carbs") * scale,
-		"fat":          floatVal(v, "fat") * scale,
+		"serving_size": servingSize,
+		"serving_unit": strVal(v, "serving_unit"),
+		"calories":     floatVal(v, "calories"),
+		"protein":      floatVal(v, "protein"),
+		"carbs":        floatVal(v, "carbs"),
+		"fat":          floatVal(v, "fat"),
 	}
 
 	raw, err := ctx.Client().Post("/food-entries", entry)
@@ -439,7 +458,7 @@ func (f *FoodLogCmd) Run(ctx *Context) error {
 		return nil
 	}
 
-	cal := floatVal(v, "calories") * scale
+	cal := floatVal(v, "calories") / servingSize * f.Qty
 	fmt.Printf("Logged: %s (%.4g %s) → %s on %s  [%.0f kcal]\n",
 		entry["food_name"], f.Qty, unit, f.Meal, date, cal)
 	return nil
@@ -497,10 +516,15 @@ func (f *FoodDiaryCmd) Run(ctx *Context) error {
 		}
 		qty := floatVal(e, "quantity")
 		unit := strVal(e, "unit")
-		cal := floatVal(e, "calories")
-		pro := floatVal(e, "protein")
-		carb := floatVal(e, "carbs")
-		fat := floatVal(e, "fat")
+		eServing := floatVal(e, "serving_size")
+		if eServing <= 0 {
+			eServing = 100
+		}
+		eScale := qty / eServing
+		cal := floatVal(e, "calories") * eScale
+		pro := floatVal(e, "protein") * eScale
+		carb := floatVal(e, "carbs") * eScale
+		fat := floatVal(e, "fat") * eScale
 		totalCal += cal
 		totalPro += pro
 		totalCarb += carb
