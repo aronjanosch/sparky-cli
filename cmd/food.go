@@ -11,6 +11,7 @@ import (
 type FoodCmd struct {
 	Search FoodSearchCmd `cmd:"" help:"Search for foods in the database."`
 	Log    FoodLogCmd    `cmd:"" help:"Log a food entry."`
+	Create FoodCreateCmd `cmd:"" help:"Create a custom food in your library."`
 	Diary  FoodDiaryCmd  `cmd:"" help:"View food diary for a date."`
 	Delete FoodDeleteCmd `cmd:"" help:"Delete a food diary entry by ID."`
 	Remove FoodRemoveCmd `cmd:"" help:"Remove a food from your library."`
@@ -311,6 +312,59 @@ func (f *FoodSearchCmd) Run(ctx *Context) error {
 	}
 	fmt.Println("[online — Open Food Facts]")
 	printFoodTable(extFoods)
+	return nil
+}
+
+// ── Create ────────────────────────────────────────────────────────────────────
+
+type FoodCreateCmd struct {
+	Name         string  `arg:"" help:"Food name."`
+	Brand        string  `name:"brand" short:"b" help:"Brand name."`
+	Calories     float64 `name:"calories" short:"c" required:"" help:"Calories per serving."`
+	Protein      float64 `name:"protein" short:"p" required:"" help:"Protein (g) per serving."`
+	Carbs        float64 `name:"carbs" required:"" help:"Carbohydrates (g) per serving."`
+	Fat          float64 `name:"fat" short:"f" required:"" help:"Fat (g) per serving."`
+	ServingSize  float64 `name:"serving-size" default:"100" help:"Serving size amount (default: 100g)."`
+	ServingUnit  string  `name:"serving-unit" default:"g" help:"Serving unit (default: g)."`
+	Fiber        float64 `name:"fiber" default:"0" help:"Fiber (g) per serving."`
+	Sugar        float64 `name:"sugar" default:"0" help:"Sugar (g) per serving."`
+	Sodium       float64 `name:"sodium" default:"0" help:"Sodium (mg) per serving."`
+	SaturatedFat float64 `name:"saturated-fat" default:"0" help:"Saturated fat (g) per serving."`
+}
+
+func (f *FoodCreateCmd) Run(ctx *Context) error {
+	payload := map[string]any{
+		"name":          f.Name,
+		"brand":         f.Brand,
+		"calories":      f.Calories,
+		"protein":       f.Protein,
+		"carbs":         f.Carbs,
+		"fat":           f.Fat,
+		"fiber":         f.Fiber,
+		"sugar":         f.Sugar,
+		"sodium":        f.Sodium,
+		"saturated_fat": f.SaturatedFat,
+		"serving_size":  f.ServingSize,
+		"serving_unit":  f.ServingUnit,
+	}
+
+	raw, err := ctx.Client().Post("/foods", payload)
+	if err != nil {
+		return err
+	}
+
+	if ctx.JSON {
+		fmt.Println(string(raw))
+		return nil
+	}
+
+	var food map[string]any
+	if err := json.Unmarshal(raw, &food); err != nil {
+		fmt.Println(string(raw))
+		return nil
+	}
+	fmt.Printf("Created food %q (ID: %s)  %.0f kcal per %.4g %s\n",
+		strVal(food, "name"), strVal(food, "id"), f.Calories, f.ServingSize, f.ServingUnit)
 	return nil
 }
 

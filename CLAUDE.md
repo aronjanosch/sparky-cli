@@ -17,19 +17,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build
 go build -o sparky .
 
-# Release (bump git tag, then run — updates GitHub releases + Homebrew formula)
-git tag v0.x.0
-GITHUB_TOKEN=$(gh auth token) goreleaser release --clean
-
 # Run
 ./sparky --help
 
-# Release (tag first, then release)
+# Release (tag first, then run — updates GitHub releases + Homebrew formula)
 git tag v0.x.0
 GITHUB_TOKEN=$(gh auth token) goreleaser release --clean
 ```
 
 There is no Makefile and no test suite currently.
+
+After implementing a feature, always do a live end-to-end test against the real server. Then critically rate the feature's usefulness from the perspective of an AI assistant using `sparky` as a tool — would you actually reach for this command, and does the UX make that easy or awkward?
 
 ## Architecture
 
@@ -55,46 +53,6 @@ Kong (`github.com/alecthomas/kong`) handles CLI parsing. Every command struct ha
 
 **Nutrient scaling:** POST /food-entries stores raw per-`serving_size` nutrient values alongside `serving_size` and `quantity` as separate fields. The frontend scales at display time as `(calories / serving_size) × quantity`. Do not pre-scale nutrients before posting.
 
-## Agentic use (AI agents)
-
-Always use `-j` for JSON output and prefer the two-step search-then-log-by-ID pattern to avoid fuzzy-match ambiguity.
-
-### Exercise workflow
-
-```bash
-# Step 1 — search. Use --external to bypass local cache and see all options.
-sparky -j exercise search "pushup"
-sparky -j exercise search --external "pushup"   # forces external, avoids cache pollution
-
-# Each result includes is_local: true/false
-# is_local: true  → id is a UUID → safe to use with --id immediately
-# is_local: false → id is a source string → must log by name first to import it
-
-# Step 2a — already local: log directly by ID (no search, no ambiguity)
-sparky -j exercise log --id <uuid> --set 3x10
-
-# Step 2b — external: log by exact name to trigger import, then search again for UUID
-sparky -j exercise log "Pushups" --set 3x10
-sparky -j exercise search "Pushups"             # now returns is_local: true with UUID
-sparky -j exercise log --id <uuid> --set 3x10   # use UUID for all future entries
-```
-
-### Food workflow
-
-```bash
-# Step 1 — search (local DB only; falls back to Open Food Facts if nothing found)
-sparky -j food search "chicken breast"
-
-# Local foods have an id UUID; external foods have provider_external_id instead
-# Step 2a — local food: log by ID
-sparky -j food log --id <uuid> -q 150 -m lunch
-
-# Step 2b — external food: log by name to import, then use ID going forward
-sparky -j food log "Chicken Breast" -q 150 -m lunch
-```
-
-Logging by name works only when the name matches exactly in the local DB, but **silently picks `results[0]` on a non-exact match** — unreliable if a partially-matching item was previously imported. Always prefer `--id` in scripts and agent tasks.
-
 ## API Base
 
 All client paths are relative to `{config.URL}/api`. Key endpoints:
@@ -103,6 +61,7 @@ All client paths are relative to `{config.URL}/api`. Key endpoints:
 |---------|--------|------|
 | ping | GET | `/identity/user` |
 | food search | GET | `/foods/foods-paginated?searchTerm=...` |
+| food create | POST | `/foods` |
 | food log | POST | `/food-entries` |
 | food diary | GET | `/food-entries/by-date/{date}` |
 | exercise search | GET | `/exercises/search?query=...` |

@@ -29,6 +29,7 @@ Food
 - Search: `sparky food search "chicken breast" [-l 10]` — local DB first, falls back to Open Food Facts automatically
 - Log by name: `sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]` — auto-imports if not found locally
 - Log by ID: `sparky food log --id <uuid> -m lunch -q 150 -u g` — skips search, unambiguous
+- Create custom: `sparky food create "My Meal" --calories 450 --protein 28 --carbs 42 --fat 16` — adds a custom food to your library; defaults to 100g; optional: --fiber, --sugar, --sodium, --saturated-fat, --brand
 - Diary: `sparky food diary [-d YYYY-MM-DD]`
 - Delete: `sparky food delete <uuid>`
 
@@ -76,6 +77,17 @@ Food — same pattern:
 sparky -j food search "chicken breast"
 # result has id (UUID) if local, provider_external_id if external
 sparky -j food log --id <uuid> -q 150 -m lunch
+```
+
+Custom food (when you have nutrition facts and it's not in the DB):
+```
+# Ingredients/beverages — nutrition per 100g/ml (default)
+sparky -j food create "Craft Beer" --calories 43 --protein 0.5 --carbs 3.6 --fat 0 --serving-unit ml
+sparky -j food log --id <uuid> -q 330 -m dinner
+
+# Meals (Cookidoo, Chefkoch, etc.) — nutrition per serving, specify explicitly
+sparky -j food create "Lasagna" --calories 450 --protein 28 --carbs 42 --fat 16 --serving-size 1 --serving-unit serving
+sparky -j food log --id <uuid> -q 1 -m dinner
 ```
 
 Notes
