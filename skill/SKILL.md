@@ -18,6 +18,7 @@ Install
   go build -o sparky .
   sudo mv sparky /usr/local/bin/
   ```
+- Pre-built binaries: https://github.com/aronjanosch/sparky-cli/releases (Linux, macOS, Windows — amd64/arm64)
 
 Setup (once)
 - `sparky config set-url <url>` — e.g. `sparky config set-url https://sparky.example.com`
@@ -26,12 +27,16 @@ Setup (once)
 - `sparky ping` — verify connection
 
 Food
-- Search: `sparky food search "chicken breast" [-l 10]` — local DB first, falls back to Open Food Facts automatically
-- Log by name: `sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]` — auto-imports if not found locally
+- Search: `sparky food search "chicken breast" [-l 10]` — local DB first, falls back to Open Food Facts; shows Brand column
+- Search by barcode: `sparky food search --barcode 4061458284547` — exact product lookup, no ambiguity
+- Log by name: `sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]`
+- Log by barcode: `sparky food log --barcode 4061458284547 -m lunch -q 113 -u g` — most reliable, no brand guessing
 - Log by ID: `sparky food log --id <uuid> -m lunch -q 150 -u g` — skips search, unambiguous
-- Create custom: `sparky food create "My Meal" --calories 450 --protein 28 --carbs 42 --fat 16` — adds a custom food to your library; defaults to 100g; optional: --fiber, --sugar, --sodium, --saturated-fat, --brand
+- Pick result: `sparky food log "Hähnchenbrust" --pick 2` — select Nth search result instead of prompting
+- Create custom: `sparky food create "My Meal" --calories 450 --protein 28 --carbs 42 --fat 16` — adds a custom food to your library; defaults to 100g serving; optional: --fiber, --sugar, --sodium, --saturated-fat, --brand, --serving-size, --serving-unit
 - Diary: `sparky food diary [-d YYYY-MM-DD]`
-- Delete: `sparky food delete <uuid>`
+- Delete entry: `sparky food delete <uuid>` — removes a diary entry
+- Remove from library: `sparky food remove <uuid>` — purge a food from your local library (get UUID via `sparky -j food search`)
 
 Exercise
 - Search: `sparky exercise search "bench press" [-l 10]` — local DB first, falls back to Free Exercise DB
@@ -39,6 +44,7 @@ Exercise
 - Log by name: `sparky exercise log "Pushups" [--duration 45] [--calories 400] [-d YYYY-MM-DD]`
 - Log by ID: `sparky exercise log --id <uuid> --set 10x80@8 --set 10x80@9` — skips search, unambiguous
 - Sets format: `REPS[xWEIGHT][@RPE]` — e.g. `10x80@8` = 10 reps, 80 kg, RPE 8; `10x80` or `10@8` also valid
+- Notes: `sparky exercise log "Pushups" --notes "felt strong"`
 - Diary: `sparky exercise diary [-d YYYY-MM-DD]`
 - Delete: `sparky exercise delete <uuid>`
 
@@ -72,11 +78,22 @@ sparky -j exercise search "Pushups"        # now is_local: true
 sparky -j exercise log --id <uuid> --set 3x10
 ```
 
-Food — same pattern:
+Food — preferred agentic workflow:
 ```
-sparky -j food search "chicken breast"
-# result has id (UUID) if local, provider_external_id if external
-sparky -j food log --id <uuid> -q 150 -m lunch
+# Option A: barcode (most reliable)
+sparky food log --barcode 4061458284547 -q 113 -u g -m lunch
+
+# Option B: search → inspect brand+macros → log by --id
+sparky -j food search "Hähnchenbrust"
+# check brand + calories in results; pick the right one
+sparky food log --id <uuid> -q 400 -u g -m dinner
+
+# Option C: search with --pick N (when brand column shows the right one)
+sparky food log "Hähnchenbrust" --pick 3 -q 400 -u g -m dinner
+
+# Remove a bad import from local library
+sparky -j food search "bad product"   # get the food's id (UUID)
+sparky food remove <uuid>
 ```
 
 Custom food (when you have nutrition facts and it's not in the DB):
@@ -92,7 +109,10 @@ sparky -j food log --id <uuid> -q 1 -m dinner
 
 Notes
 - `-j` / `--json` is a **root-level flag**: `sparky -j food diary`, not `sparky food diary -j`
-- Logging by name triggers a fuzzy search — if no exact match, picks `results[0]` silently; use `--id` in scripts
+- Always verify brand in search results before logging — Open Food Facts has many products with identical names
+- `--barcode` is the most reliable option when the product has a scannable barcode
+- `--pick N` selects the Nth result (1-based); exact local name match bypasses `--pick` entirely
+- In JSON mode with ambiguous results, the CLI always picks `results[0]` — use `--id` in scripts to be safe
 - Both search commands fall back to online providers automatically; matches are added to your library on first log
 - Weight is stored in kg; lbs are auto-converted (`166 lbs → 75.30 kg`)
 - Full UUIDs for delete: `sparky -j food diary | jq '.[0].id'`
