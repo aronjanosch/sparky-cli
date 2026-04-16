@@ -27,7 +27,7 @@ Setup (once)
 - `sparky ping` — verify connection
 
 Food
-- Search: `sparky food search "chicken breast" [-l 10]` — local DB first, falls back to Open Food Facts; shows Brand column
+- Search: `sparky food search "chicken breast" [-l 10] [--internal]` — local DB first, falls back to Open Food Facts, unless --internal flag is set (local db search only); shows Brand column
 - Search by barcode: `sparky food search --barcode 4061458284547` — exact product lookup, no ambiguity
 - Log by name: `sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]`
 - Log by barcode: `sparky food log --barcode 4061458284547 -m lunch -q 113 -u g` — most reliable, no brand guessing

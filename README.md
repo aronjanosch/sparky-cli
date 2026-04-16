@@ -37,13 +37,13 @@ Config is stored at `~/.config/sparky/config.json`.
 
 ### food
 ```bash
-sparky food search "chicken breast" [-l 10]
+sparky food search "chicken breast" [-l 10] [--internal]
 sparky food log "chicken breast" -m lunch -q 150 -u g [-d YYYY-MM-DD]
 sparky food diary [-d YYYY-MM-DD]
 sparky food delete <uuid>
 ```
 `-m` meal options: `breakfast`, `lunch`, `dinner`, `snacks` (default: `snacks`)
-`food search` checks your local library first; if nothing is found it falls back to **Open Food Facts** automatically.
+`food search` checks your local library first; if nothing is found it falls back to **Open Food Facts** automatically, unless --internal flag is set.
 `food log` picks the first match and auto-imports from Open Food Facts if the food isn't in your library yet.
 
 ### exercise
