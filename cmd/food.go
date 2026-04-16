@@ -20,9 +20,10 @@ type FoodCmd struct {
 // ── Search ────────────────────────────────────────────────────────────────────
 
 type FoodSearchCmd struct {
-	Name    string `arg:"" optional:"" help:"Food name to search for."`
-	Barcode string `name:"barcode" short:"b" help:"Look up by barcode (exact product match)."`
-	Limit   int    `short:"l" default:"10" help:"Max results to show."`
+	Name     string `arg:"" optional:"" help:"Food name to search for."`
+	Barcode  string `name:"barcode" short:"b" help:"Look up by barcode (exact product match)."`
+	Limit    int    `short:"l" default:"10" help:"Max results to show."`
+	Internal bool   `name:"internal" short:"i" help:"Search internal/local db only (bypass OpenFoodFacts API search)."`
 }
 
 func searchFoodsLocal(ctx *Context, name string, limit int) ([]map[string]any, error) {
@@ -293,7 +294,10 @@ func (f *FoodSearchCmd) Run(ctx *Context) error {
 		return nil
 	}
 
-	// Fall back to Open Food Facts
+	// Return nothing if internal flag is true, otherwise fall back to Open Food Facts
+	if f.Internal {
+		return nil
+	}
 	if !ctx.JSON {
 		fmt.Printf("No local results for %q — searching Open Food Facts online...\n\n", f.Name)
 	}
